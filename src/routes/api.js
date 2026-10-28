@@ -119,6 +119,17 @@ function permitOrThrow(decision) {
   }
 }
 
+function jobNotFound(res) {
+  return res.status(404).json({ error: 'Job not found.' });
+}
+
+function concealedJobNotFoundError() {
+  const error = new Error('Job not found.');
+  error.status = 404;
+  error.concealJob = true;
+  return error;
+}
+
 router.get('/health', async (_req, res) => {
   const { rows } = await pool.query('SELECT NOW() AS database_time');
   res.json({ status: 'ok', database: 'connected', databaseTime: rows[0].database_time });
@@ -138,25 +149,25 @@ router.get('/authorization/check', async (req, res) => {
   }
   const [user, job] = await Promise.all([repo.getUser(pool, userId), repo.getJob(pool, jobId)]);
   if (!user) return res.status(404).json({ error: 'User not found.' });
-  if (!job) return res.status(404).json({ error: 'Job not found.' });
   const assignments = await assignmentsFor(pool, userId);
   const roleActions = await repo.getRoleActions(pool);
+  const maySeeJob = job && (actorIsAccessAdmin || canPerform(user, 'view_job', job, assignments, { roleActions }).allowed);
+  if (!maySeeJob) return jobNotFound(res);
   // A supplied reason lets the caller check reason-gated exception actions before attempting them.
   const reason = typeof req.query.reason === 'string' ? req.query.reason : '';
   const decision = canPerform(user, action, job, assignments, { roleActions, reason }, new Date());
-  const maySeeJobDetails = actorIsAccessAdmin || canPerform(user, 'view_job', job, assignments, { roleActions }).allowed;
-  res.json({ user: { id: user.id, name: user.name }, job: maySeeJobDetails ? { id: job.id, reference: job.reference, stage: job.stage } : { id: job.id }, action, ...decision, policy: 'scoped-role + workflow-stage + separation-of-duties; deny by default' });
+  res.json({ user: { id: user.id, name: user.name }, job: { id: job.id, reference: job.reference, stage: job.stage }, action, ...decision, policy: 'scoped-role + workflow-stage + separation-of-duties; deny by default' });
 });
 
 router.get('/jobs/:jobId', async (req, res) => {
   const jobId = integerParam(req.params.jobId, 'jobId');
   const actor = await getDemoActor(pool, req);
   const job = await repo.getJob(pool, jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found.' });
+  if (!job) return jobNotFound(res);
   const assignments = await assignmentsFor(pool, actor.id);
   const roleActions = await repo.getRoleActions(pool);
   const decision = canPerform(actor, 'view_job', job, assignments, { roleActions });
-  permitOrThrow(decision);
+  if (!decision.allowed) return jobNotFound(res);
   res.json({ job });
 });
 
@@ -237,12 +248,17 @@ router.get('/jobs/:jobId/who-could-act', async (req, res) => {
   const { rows: userRows } = await pool.query('SELECT * FROM users ORDER BY id');
   const users = userRows.map(row => repo.mapUser(row));
   const assignments = await repo.getAllAssignments(pool);
+  const statusesAt = await repo.getStatusesAt(pool, at.toISOString());
   const roleActions = await repo.getRoleActions(pool);
   const results = users.map(user => {
+    const statusRecord = statusesAt.get(String(user.id));
     const decision = canPerform(user, action, historicalJob, assignments, {
-      reason: 'Historical review: an appropriately documented reason would be required', roleActions
+      reason: 'Historical review: an appropriately documented reason would be required',
+      roleActions,
+      statusKnown: Boolean(statusRecord),
+      statusAt: statusRecord?.status
     }, at);
-    return { userId: user.id, name: user.name, userStatusNow: user.status, ...decision };
+    return { userId: user.id, name: user.name, statusAtThatTime: statusRecord?.status ?? null, ...decision };
   });
   const allowed = results.filter(item => item.allowed);
   res.json({
@@ -254,7 +270,7 @@ router.get('/jobs/:jobId/who-could-act', async (req, res) => {
     usersAllowedByRecordedAssignments: allowed,
     allowedCount: allowed.length,
     excludedCount: results.length - allowed.length,
-    note: 'Uses grants effective at the requested timestamp and reconstructs the job from audit snapshots. User availability is current, not historically versioned; an inactive/absent account may therefore be conservatively denied in a past-time review. For cancel/reopen, an allowed result is conditional on supplying the required reason.'
+    note: 'Uses grants and recorded user status effective at the requested timestamp, and reconstructs the job from audit snapshots. A missing status record is denied rather than guessed. For cancel/reopen, an allowed result is conditional on supplying the required reason.'
   });
 });
 
@@ -262,12 +278,12 @@ router.get('/jobs/:jobId/history', async (req, res) => {
   const jobId = integerParam(req.params.jobId, 'jobId');
   const actor = await getDemoActor(pool, req);
   const job = await repo.getJob(pool, jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found.' });
+  if (!job) return jobNotFound(res);
   const assignments = await assignmentsFor(pool, actor.id);
   const roleActions = await repo.getRoleActions(pool);
   const viewDecision = canPerform(actor, 'view_job', job, assignments, { roleActions });
   const investigationDecision = canManagePermissions(actor, assignments);
-  if (!viewDecision.allowed && !investigationDecision.allowed) permitOrThrow(viewDecision);
+  if (!viewDecision.allowed && !investigationDecision.allowed) return jobNotFound(res);
   const history = await repo.getJobHistory(pool, jobId);
   res.json({ jobId, history });
 });
@@ -281,13 +297,13 @@ router.post('/jobs/:jobId/actions/:action', async (req, res) => {
 
   const result = await withTransaction(async client => {
     const job = await repo.getJob(client, jobId, { forUpdate: true });
-    if (!job) {
-      const error = new Error('Job not found.'); error.status = 404; throw error;
-    }
+    if (!job) throw concealedJobNotFoundError();
     // Permission is re-evaluated while the job row is locked, immediately before mutation.
     const currentActor = await repo.getUser(client, actor.id);
     const assignments = await assignmentsFor(client, actor.id, { lock: true });
     const roleActions = await repo.getRoleActions(client);
+    const viewDecision = canPerform(currentActor, 'view_job', job, assignments, { roleActions }, new Date());
+    if (!viewDecision.allowed) throw concealedJobNotFoundError();
     const decision = canPerform(currentActor, action, job, assignments, { reason, roleActions }, new Date());
     permitOrThrow(decision);
     const before = snapshot(job);
@@ -328,6 +344,39 @@ router.post('/jobs/:jobId/actions/:action', async (req, res) => {
     return { job: updated, decision };
   });
   res.json({ success: true, ...result });
+});
+
+router.patch('/users/:userId/status', async (req, res) => {
+  const userId = integerParam(req.params.userId, 'userId');
+  const actor = await getDemoActor(pool, req);
+  const status = String(req.body?.status || '').toLowerCase();
+  if (!['active', 'absent', 'disabled'].includes(status)) {
+    return res.status(400).json({ error: 'status must be active, absent or disabled.' });
+  }
+  const reason = requiredReason(req.body?.reason);
+  if (String(actor.id) === String(userId)) {
+    return res.status(403).json({ error: 'Administrators cannot change their own status through this endpoint.', code: 'SELF_STATUS_CHANGE_BLOCKED' });
+  }
+  const result = await withTransaction(async client => {
+    const latestActor = await repo.getUser(client, actor.id);
+    const grants = await assignmentsFor(client, actor.id, { lock: true });
+    permitOrThrow(canManagePermissions(latestActor, grants));
+    const target = await repo.getUser(client, userId);
+    if (!target) { const error = new Error('User not found.'); error.status = 404; throw error; }
+    if (target.status === status) {
+      const error = new Error(`User is already ${status}.`); error.status = 409; throw error;
+    }
+    const changed = await repo.changeUserStatus(client, { userId, status, changedByUserId: actor.id, reason });
+    await repo.writeAudit(client, {
+      actorUserId: actor.id,
+      entityType: 'user', entityId: userId, action: 'user.status_changed',
+      beforeState: { id: target.id, status: target.status },
+      afterState: { id: changed.user.id, status: changed.user.status, effectiveAt: changed.effectiveAt },
+      reason, requestId: req.requestId
+    });
+    return changed;
+  });
+  res.json({ success: true, user: result.user, effectiveAt: result.effectiveAt });
 });
 
 router.get('/roles', async (req, res) => {
@@ -506,10 +555,10 @@ router.patch('/parser/jobs/:jobId/metadata', async (req, res) => {
   const fields = validateParserMetadata(req.body || {});
   if (!Object.keys(fields).length) return res.status(400).json({ error: 'Supply at least one metadata field.' });
   const job = await repo.getJob(pool, jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found.' });
+  if (!job) return jobNotFound(res);
   const grants = await assignmentsFor(pool, actor.id);
   const roleActions = await repo.getRoleActions(pool);
-  permitOrThrow(canPerform(actor, 'parser_update_job', job, grants, { fields, roleActions }));
+  if (!canPerform(actor, 'parser_update_job', job, grants, { fields, roleActions }).allowed) return jobNotFound(res);
   const keys = Object.keys(fields);
   const setParts = [];
   const params = [];
@@ -520,10 +569,11 @@ router.patch('/parser/jobs/:jobId/metadata', async (req, res) => {
   params.push(jobId);
   const updated = await withTransaction(async client => {
     const lockedJob = await repo.getJob(client, jobId, { forUpdate: true });
+    if (!lockedJob) throw concealedJobNotFoundError();
     const latestActor = await repo.getUser(client, actor.id);
     const latestGrants = await assignmentsFor(client, actor.id, { lock: true });
     const latestRoleActions = await repo.getRoleActions(client);
-    permitOrThrow(canPerform(latestActor, 'parser_update_job', lockedJob, latestGrants, { fields, roleActions: latestRoleActions }));
+    if (!canPerform(latestActor, 'parser_update_job', lockedJob, latestGrants, { fields, roleActions: latestRoleActions }).allowed) throw concealedJobNotFoundError();
     const before = snapshot(lockedJob);
     const { rows } = await client.query(`UPDATE jobs SET ${setParts.join(', ')}, updated_at=NOW() WHERE id=$${params.length} RETURNING *`, params);
     const next = repo.mapJob(rows[0]);

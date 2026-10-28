@@ -55,6 +55,29 @@ test('absent owner cannot perform an otherwise permitted action', () => {
   assert.equal(result.code, 'USER_NOT_ACTIVE');
 });
 
+test('historical active status can allow a user who is absent today', () => {
+  const absentToday = activeUser(4, { status: 'absent' });
+  const result = testDecision(absentToday, 'check_job', job(), [grant(4, 'checker')], {
+    statusKnown: true, statusAt: 'active'
+  });
+  assert.equal(result.allowed, true);
+});
+
+test('historical absent status denies a user who is active today', () => {
+  const activeToday = activeUser(4);
+  const result = testDecision(activeToday, 'check_job', job(), [grant(4, 'checker')], {
+    statusKnown: true, statusAt: 'absent'
+  });
+  assert.equal(result.code, 'USER_NOT_ACTIVE');
+});
+
+test('missing historical status fails closed', () => {
+  const result = testDecision(activeUser(4), 'check_job', job(), [grant(4, 'checker')], {
+    statusKnown: false
+  });
+  assert.equal(result.code, 'USER_STATUS_HISTORY_MISSING');
+});
+
 test('revoked responsibility takes effect immediately', () => {
   const user = activeUser(4);
   const previouslyGranted = grant(4, 'checker', { revokedAt: new Date('2026-10-28T14:59:00.000Z') });

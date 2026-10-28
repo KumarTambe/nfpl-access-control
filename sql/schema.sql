@@ -22,6 +22,17 @@ CREATE TABLE IF NOT EXISTS users (
   CHECK ((user_type = 'client' AND client_id IS NOT NULL) OR user_type <> 'client')
 );
 
+CREATE TABLE IF NOT EXISTS user_status_history (
+  id BIGSERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL CHECK (status IN ('active', 'absent', 'disabled')),
+  effective_at TIMESTAMPTZ NOT NULL,
+  changed_by_user_id INTEGER REFERENCES users(id),
+  reason TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, effective_at)
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
   id BIGSERIAL PRIMARY KEY,
   reference TEXT NOT NULL UNIQUE,
@@ -93,6 +104,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_prepared_by_stage ON jobs(prepared_by_user_i
 CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_permissions_user_role_active ON permission_assignments(user_id, role, effective_from, expires_at) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_permissions_scope ON permission_assignments(client_id, branch_id, direction, mode) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_user_status_history_lookup ON user_status_history(user_id, effective_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_job_time ON audit_logs(entity_type, entity_id, created_at DESC) WHERE entity_type = 'job';
 CREATE INDEX IF NOT EXISTS idx_audit_actor_time ON audit_logs(actor_user_id, created_at DESC);
 

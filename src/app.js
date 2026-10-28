@@ -16,6 +16,7 @@ app.get('/', (_req, res) => res.json({ name: 'NFPL Access Control Service', api:
 app.use(api);
 app.use((req, res) => res.status(404).json({ error: 'Route not found.', requestId: req.requestId }));
 app.use((err, req, res, _next) => {
+  if (err.concealJob) return res.status(404).json({ error: 'Job not found.' });
   const isPostgresInputError = typeof err.code === 'string' && err.code.startsWith('22');
   const status = Number(err.status) || (err.code === '23505' ? 409 : (err.code === '23503' || err.code === '23514' || isPostgresInputError ? 400 : 500));
   if (status >= 500) console.error(`[${req.requestId}]`, err);

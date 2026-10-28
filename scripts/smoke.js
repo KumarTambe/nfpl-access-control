@@ -48,8 +48,22 @@ async function main() {
   assert.equal(absentCheck.data.code, 'USER_NOT_ACTIVE');
 
   const clientBoundary = await request('GET', '/authorization/check?userId=8&jobId=1&action=view_job', 8);
-  expectStatus(clientBoundary, 200, 'client boundary');
-  assert.equal(clientBoundary.data.code, 'CLIENT_BOUNDARY');
+  expectStatus(clientBoundary, 404, 'client boundary concealment');
+
+  // A client who cannot view Job 1 must get the same public response as for a missing job.
+  const missingDecision = await request('GET', '/authorization/check?userId=8&jobId=999999&action=view_job', 8);
+  expectStatus(missingDecision, 404, 'missing authorization decision');
+  assert.deepEqual(clientBoundary.data, missingDecision.data);
+  const hiddenJob = await request('GET', '/jobs/1', 8);
+  const missingJob = await request('GET', '/jobs/999999', 8);
+  expectStatus(hiddenJob, 404, 'hidden job');
+  expectStatus(missingJob, 404, 'missing job');
+  assert.deepEqual(hiddenJob.data, missingJob.data);
+  const hiddenHistory = await request('GET', '/jobs/1/history', 8);
+  const missingHistory = await request('GET', '/jobs/999999/history', 8);
+  expectStatus(hiddenHistory, 404, 'hidden job history');
+  expectStatus(missingHistory, 404, 'missing job history');
+  assert.deepEqual(hiddenHistory.data, missingHistory.data);
 
   const queue = await request('GET', '/users/4/jobs-needing-me', 4);
   expectStatus(queue, 200, 'actionable queue');
@@ -57,13 +71,43 @@ async function main() {
   assert.ok(queue.data.jobs.some(job => String(job.id) === '1'), 'Rahul queue should include in-scope Job 1');
   assert.ok(!queue.data.jobs.some(job => String(job.id) === '2'), 'Rahul queue must exclude export Job 2');
   assert.equal(queue.data.returned, queue.data.jobs.length);
-  console.log('PASS scoped decisions, maker/checker conflict, absence, client boundary and queue');
+  console.log('PASS scoped decisions, maker/checker conflict, absence, client boundary, existence concealment and queue');
 
   const selfEscalation = await request('POST', '/permissions', 1, {
     userId: 1, role: 'workflow_admin', reason: 'Attempt self escalation'
   });
   expectStatus(selfEscalation, 403, 'admin self-escalation');
   assert.equal(selfEscalation.data.code, 'SELF_ESCALATION_BLOCKED');
+
+  // Historical eligibility uses the recorded status at the requested time, not today's status.
+  const rahulWasActiveAt = new Date().toISOString();
+  const rahulAbsent = await request('PATCH', '/users/4/status', 1, {
+    status: 'absent', reason: 'Smoke test temporary absence'
+  });
+  expectStatus(rahulAbsent, 200, 'record Rahul absence');
+  const rahulHistorical = await request('GET', `/jobs/1/who-could-act?${new URLSearchParams({ action: 'check_job', at: rahulWasActiveAt })}`, 1);
+  expectStatus(rahulHistorical, 200, 'Rahul historical active status');
+  assert.ok(rahulHistorical.data.usersAllowedByRecordedAssignments.some(user => String(user.userId) === '4'));
+  const rahulCurrent = await request('GET', `/jobs/1/who-could-act?${new URLSearchParams({ action: 'check_job', at: new Date().toISOString() })}`, 1);
+  expectStatus(rahulCurrent, 200, 'Rahul current absent status');
+  assert.ok(!rahulCurrent.data.usersAllowedByRecordedAssignments.some(user => String(user.userId) === '4'));
+  const rahulActiveAgain = await request('PATCH', '/users/4/status', 1, {
+    status: 'active', reason: 'Restore smoke test checker'
+  });
+  expectStatus(rahulActiveAgain, 200, 'restore Rahul after status test');
+
+  const sameerWasAbsentAt = new Date().toISOString();
+  const sameerActive = await request('PATCH', '/users/7/status', 1, {
+    status: 'active', reason: 'Smoke test temporary return'
+  });
+  expectStatus(sameerActive, 200, 'record Sameer return');
+  const sameerHistorical = await request('GET', `/jobs/1/who-could-act?${new URLSearchParams({ action: 'check_job', at: sameerWasAbsentAt })}`, 1);
+  expectStatus(sameerHistorical, 200, 'Sameer historical absent status');
+  assert.ok(!sameerHistorical.data.usersAllowedByRecordedAssignments.some(user => String(user.userId) === '7'));
+  const sameerCurrent = await request('GET', `/jobs/1/who-could-act?${new URLSearchParams({ action: 'check_job', at: new Date().toISOString() })}`, 1);
+  expectStatus(sameerCurrent, 200, 'Sameer current active status');
+  assert.ok(sameerCurrent.data.usersAllowedByRecordedAssignments.some(user => String(user.userId) === '7'));
+  console.log('PASS historical user-status reconstruction in both directions');
 
   // Create a data-driven role, grant it briefly in a narrow scope, verify live effect, then revoke it.
   const roleName = `smoke_checker_${Date.now()}`;

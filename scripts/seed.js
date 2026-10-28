@@ -28,7 +28,7 @@ const USERS = [
 async function seed(pool) {
   await pool.query('BEGIN');
   try {
-    await pool.query('TRUNCATE audit_logs, permission_assignments, jobs, users, clients, branches RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE audit_logs, user_status_history, permission_assignments, jobs, users, clients, branches RESTART IDENTITY CASCADE');
     for (const name of BRANCHES) await pool.query('INSERT INTO branches(name) VALUES ($1)', [name]);
     for (const name of CLIENTS) await pool.query('INSERT INTO clients(name) VALUES ($1)', [name]);
     for (const u of USERS) {
@@ -39,6 +39,10 @@ async function seed(pool) {
       );
     }
     await pool.query(`SELECT setval(pg_get_serial_sequence('users','id'), 20, true)`);
+    await pool.query(
+      `INSERT INTO user_status_history(user_id,status,effective_at,changed_by_user_id,reason)
+       SELECT id,status,created_at,NULL,'Initial seeded status' FROM users`
+    );
 
     const roleDefinitions = [
       ['maker', 'Prepares shipment work and may cancel unfiled jobs.', 'internal'],

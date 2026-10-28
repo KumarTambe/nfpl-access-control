@@ -90,8 +90,12 @@ function allow(code, reason) {
  */
 function canPerform(user, action, job, assignments, context = {}, now = new Date()) {
   if (!user) return deny('USER_NOT_FOUND', 'The user does not exist.');
-  if (user.status !== 'active') {
-    return deny('USER_NOT_ACTIVE', `The user is ${user.status}; inactive users cannot perform actions.`);
+  if (context.statusKnown === false) {
+    return deny('USER_STATUS_HISTORY_MISSING', 'The user status is not recorded for the requested historical time, so access is denied.');
+  }
+  const status = context.statusAt ?? user.status;
+  if (status !== 'active') {
+    return deny('USER_NOT_ACTIVE', `The user is ${status}; inactive users cannot perform actions.`);
   }
   if (!action) return deny('INVALID_ACTION', 'An action is required.');
   const roleActions = context.roleActions || ROLE_ACTIONS;

@@ -100,6 +100,35 @@ async function getAllAssignments(db) {
   return rows.map(mapAssignment);
 }
 
+async function getStatusesAt(db, at) {
+  const { rows } = await db.query(
+    `SELECT DISTINCT ON (user_id) user_id, status, effective_at
+     FROM user_status_history
+     WHERE effective_at <= $1
+     ORDER BY user_id, effective_at DESC, id DESC`,
+    [at]
+  );
+  return new Map(rows.map(row => [String(row.user_id), {
+    status: row.status,
+    effectiveAt: row.effective_at
+  }]));
+}
+
+async function changeUserStatus(db, { userId, status, changedByUserId, reason }) {
+  const { rows } = await db.query(
+    `WITH updated AS (
+       UPDATE users SET status=$1 WHERE id=$2 RETURNING *
+     ), history AS (
+       INSERT INTO user_status_history(user_id,status,effective_at,changed_by_user_id,reason)
+       SELECT id,$1,NOW(),$3,$4 FROM updated
+       RETURNING status, effective_at
+     )
+     SELECT updated.*, history.effective_at FROM updated CROSS JOIN history`,
+    [status, userId, changedByUserId, reason]
+  );
+  return rows[0] ? { user: mapUser(rows[0]), effectiveAt: rows[0].effective_at } : null;
+}
+
 async function getJobHistory(db, jobId) {
   const { rows } = await db.query(
     `SELECT l.id, l.actor_user_id, u.name AS actor_name, l.action, l.before_state, l.after_state, l.reason, l.request_id, l.created_at
@@ -168,5 +197,5 @@ async function listJobsNeedingUser(db, userId, { limit = 50, offset = 0 } = {}) 
 module.exports = {
   mapUser, mapJob, mapAssignment,
   getUser, getJob, getAssignmentsForUser, getAllAssignments, getRoleActions, getRoleDefinitions, getRoleDefinition,
-  getJobHistory, writeAudit, listJobsNeedingUser
+  getStatusesAt, changeUserStatus, getJobHistory, writeAudit, listJobsNeedingUser
 };

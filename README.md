@@ -66,7 +66,7 @@ After loading the sample dataset, run:
 npm run seed:scale
 ```
 
-This grows the dataset to 500 users and 200,000 jobs (without intentionally reducing existing data). The generator uses PostgreSQL `generate_series`, rather than inserting 200,000 rows one request at a time. The generated workload is for performance and query-plan checks; use the curated seed before the five-minute demo.
+This grows the dataset to 500 users and 200,000 jobs (without intentionally reducing existing data). The generator uses PostgreSQL `generate_series`, rather than inserting 200,000 rows one request at a time. Run it against a separate disposable database such as `nfpl_access_scale`; do not grow the 20-user/300-job demo database. See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for one recorded local check and its limits.
 
 ## Sample users and access
 
@@ -168,7 +168,17 @@ curl "http://localhost:3000/jobs/1/who-could-act?action=check_job&at=${AT}" \
   -H 'x-demo-user-id: 1'
 ```
 
-Use an ISO-8601 timestamp. The response reconstructs the job from audit snapshots and evaluates permission assignments effective at that time. **User availability is not historically versioned in this MVP**, so it uses current active/absent status and says so in the response.
+Use an ISO-8601 timestamp. The response reconstructs the job from audit snapshots, evaluates permission assignments effective at that time, and uses the recorded user status effective at that time. If a status record is missing, the service denies that user's historical eligibility rather than guessing.
+
+### Record a user-status change (access administrator only)
+
+```bash
+curl -X PATCH 'http://localhost:3000/users/4/status' \
+  -H 'content-type: application/json' -H 'x-demo-user-id: 1' \
+  -d '{"status":"absent","reason":"Temporary leave cover"}'
+```
+
+The service changes the current status, records the effective timestamp and actor in `user_status_history`, and writes an audit event in one transaction. An access administrator cannot change their own status through this demo endpoint.
 
 ### Reopen a filed shipment (workflow admin only; reason required)
 
@@ -203,8 +213,8 @@ Then create a scoped grant with `POST /permissions`. Custom roles can use existi
 
 ## Tests and scope limits
 
-`npm test` uses Node's built-in test runner and tests the pure policy rules without needing a running database. It covers scope restrictions, separation of duties, absent users, revoked grants, filed-job exceptions, admin self-escalation, parser limits, client boundaries and configurable custom roles.
+`npm test` uses Node's built-in test runner and tests the pure policy rules without needing a running database. It covers scope restrictions, separation of duties, current and historical user status, revoked grants, filed-job exceptions, admin self-escalation, parser limits, client boundaries and configurable custom roles. The PostgreSQL-backed smoke test also checks that an inaccessible job and a nonexistent job produce the same minimal public 404 response for authorization checks, job reads and history reads. This is an existence-disclosure protection, not a claim to eliminate timing side channels.
 
-The current working environment used to draft this repository did not have PostgreSQL or Docker installed, and package installation could not be verified here. Therefore **the database/API integration and end-to-end demo must be run locally before submission**. Do not state that those checks passed until you run them. Once the server is running after `npm run db:setup`, use a second terminal to run `npm run test:smoke`; it exercises the actual API, creates a temporary custom role and one `SMOKE-*` job, and reports pass/fail. Run `npm run db:setup` again afterward if you want the untouched curated demo data back. The code fails closed on unknown actions and failed authorization checks, and the database uses transactions for workflow changes and audit writes.
+Run the database/API checks locally before submission and report only results you actually observed. Once the server is running after `npm run db:setup`, use a second terminal to run `npm run test:smoke`; it exercises the actual API, creates a temporary custom role and one `SMOKE-*` job, and reports pass/fail. Run `npm run db:setup` again afterward to restore the curated demo data. The code fails closed on unknown actions and failed authorization checks, and the database uses transactions for workflow changes and audit writes.
 
-Out of scope for this assessment prototype: production authentication/SSO, frontend, user-status history reconstruction, dual approval for filed-job exceptions, and full integration/performance testing in a PostgreSQL runtime. These limitations are disclosed in the design document.
+Out of scope for this assessment prototype: production authentication/SSO, frontend, dual approval for filed-job exceptions, database-enforced audit immutability, and formal load/benchmark testing. These limitations are disclosed in the design document.
