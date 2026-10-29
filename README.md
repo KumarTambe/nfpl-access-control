@@ -2,7 +2,7 @@
 
 A small, explainable authorization API for a customs brokerage. It decides who may view or act on a shipment, applies workflow and separation-of-duties rules, keeps an audit trail, and retains permission history for investigation.
 
-> **Live Demo:** [https://npfl-access-control.vercel.app/](https://npfl-access-control.vercel.app/)
+> **Simple Frontend's Link :** [https://npfl-access-control.vercel.app/](https://npfl-access-control.vercel.app/)
 
 > **Assessment honesty note:** This project was developed with AI assistance for implementation planning, code drafting, tests, and documentation. Review every file, run the project, adapt the design to your own decisions, and disclose the assistance in the format requested by the assessment. Do not claim code or tests were run on an environment where they were not.
 
