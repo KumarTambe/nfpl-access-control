@@ -7,6 +7,22 @@ const api = require('./routes/api');
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '1mb' }));
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean)
+);
+app.use((req, res, next) => {
+  const origin = req.get('origin');
+  if (!origin || !allowedOrigins.has(origin)) return next();
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-User-Id, X-Request-Id');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+});
 app.use((req, res, next) => {
   req.requestId = req.get('x-request-id') || randomUUID();
   res.setHeader('x-request-id', req.requestId);
