@@ -25,7 +25,7 @@ npm install
 npm run dev
 ```
 
-For the deployed backend, set `VITE_API_BASE_URL=https://nfpl-access-control-ykdp.onrender.com` in `frontend/.env`. Configure the backend service's `CORS_ORIGIN` environment variable to the exact frontend origin (for example, `https://your-frontend.onrender.com`), redeploy the backend, then build the frontend with `npm run build`. The frontend has no database credentials and never replaces server-side authorization.
+The copied frontend environment file targets the local API. For the deployed backend, set `VITE_API_BASE_URL=https://nfpl-access-control-ykdp.onrender.com` in the static site's environment settings. Configure the backend service's `CORS_ORIGIN` environment variable to the exact frontend origin (for example, `https://your-frontend.onrender.com`), redeploy the backend, then build the frontend with `npm run build`. The frontend has no database credentials and never replaces server-side authorization.
 
 For a Render Static Site, use `frontend` as the root directory, `npm install && npm run build` as the build command, and `dist` as the publish directory. Add `VITE_API_BASE_URL` to the static site's environment settings and the static-site URL to the backend's comma-separated `CORS_ORIGIN` setting.
 
