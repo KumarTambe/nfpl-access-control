@@ -2,6 +2,8 @@
 
 A small, explainable authorization API for a customs brokerage. It decides who may view or act on a shipment, applies workflow and separation-of-duties rules, keeps an audit trail, and retains permission history for investigation.
 
+> **Live Demo:** [https://npfl-access-control.vercel.app/](https://npfl-access-control.vercel.app/)
+
 > **Assessment honesty note:** This project was developed with AI assistance for implementation planning, code drafting, tests, and documentation. Review every file, run the project, adapt the design to your own decisions, and disclose the assistance in the format requested by the assessment. Do not claim code or tests were run on an environment where they were not.
 
 ## Stack
@@ -12,9 +14,9 @@ A small, explainable authorization API for a customs brokerage. It decides who m
 - **`pg`** connects Node.js to PostgreSQL with parameterized SQL.
 - **Node's built-in test runner** runs the pure authorization policy tests without needing PostgreSQL.
 
-## Optional demonstration frontend
+## Demonstration frontend
 
-The `frontend/` directory contains a small React/Vite demonstration client. It uses the same prototype `x-demo-user-id` mechanism as the API: this is a seeded-user selector for a reviewer, **not** a login system or production authentication.
+The React/Vite demonstration client in `frontend/` is deployed on Vercel and connects to the existing Render backend at `https://nfpl-access-control-ykdp.onrender.com`. It uses the same prototype `x-demo-user-id` mechanism as the API: this is a seeded-user selector for a reviewer, **not** a login system or production authentication.
 
 Run it in a second terminal after the API is available:
 
@@ -25,9 +27,16 @@ npm install
 npm run dev
 ```
 
-The copied frontend environment file targets the local API. For the deployed backend, set `VITE_API_BASE_URL=https://nfpl-access-control-ykdp.onrender.com` in the static site's environment settings. Configure the backend service's `CORS_ORIGIN` environment variable to the exact frontend origin (for example, `https://your-frontend.onrender.com`), redeploy the backend, then build the frontend with `npm run build`. The frontend has no database credentials and never replaces server-side authorization.
+The copied frontend environment file targets the local API. The deployed Vercel frontend uses `VITE_API_BASE_URL=https://nfpl-access-control-ykdp.onrender.com`. The frontend has no database credentials and never replaces server-side authorization.
 
-For a Render Static Site, use `frontend` as the root directory, `npm install && npm run build` as the build command, and `dist` as the publish directory. Add `VITE_API_BASE_URL` to the static site's environment settings and the static-site URL to the backend's comma-separated `CORS_ORIGIN` setting.
+### Vercel configuration
+
+- Root directory: `frontend`
+- Build command: `npm run build`
+- Output directory: `dist`
+- Environment variable: `VITE_API_BASE_URL=https://nfpl-access-control-ykdp.onrender.com`
+
+The Render backend's comma-separated `CORS_ORIGIN` setting must include the exact Vercel frontend origin: `https://npfl-access-control.vercel.app`. Redeploy the backend after changing that setting.
 
 ## Requirements
 
@@ -234,4 +243,4 @@ Then create a scoped grant with `POST /permissions`. Custom roles can use existi
 
 Run the database/API checks locally before submission and report only results you actually observed. Once the server is running after `npm run db:setup`, use a second terminal to run `npm run test:smoke`; it exercises the actual API, creates a temporary custom role and one `SMOKE-*` job, and reports pass/fail. Run `npm run db:setup` again afterward to restore the curated demo data. The code fails closed on unknown actions and failed authorization checks, and the database uses transactions for workflow changes and audit writes.
 
-Out of scope for this assessment prototype: production authentication/SSO, frontend, dual approval for filed-job exceptions, database-enforced audit immutability, and formal load/benchmark testing. These limitations are disclosed in the design document.
+Current limitations: production authentication/SSO is not implemented; the demonstration user header is spoofable and must not be used as real authentication. The prototype also lacks dual approval for filed-job exceptions, database-enforced audit immutability, and formal load/benchmark testing. These limitations are disclosed in the design document.
