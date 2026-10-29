@@ -41,8 +41,8 @@ curl 'http://localhost:3000/jobs/5/history' -H 'x-demo-user-id: 3'
 
 ## 3:15–4:15 — Access investigations and custom roles
 
-As Asha (global access admin), call the `who-could-act` endpoint with a concrete timestamp. Explain the difference between “who actually changed the job” (history) and “who had permission under the recorded policy” (historical eligibility). If convenient, create a low-risk custom Reviewer role with `POST /roles`.
+As Asha (global access admin), call the `who-could-act` endpoint with a concrete timestamp. Explain the difference between “who actually changed the job” (history) and “who had permission under the recorded policy” (historical eligibility). The investigation uses the user status recorded at that timestamp, not the user's current status; a missing historical status record is denied rather than guessed. If convenient, create a low-risk custom Reviewer role with `POST /roles`.
 
 ## 4:15–5:00 — Scale, limitations and close
 
-Show indexes and the `npm run seed:scale` command. Mention that the actionable queue filters/paginates in PostgreSQL. Close by disclosing the prototype's known limits: demo identity header, no second approver, and current user status used in historical permission investigations. Avoid claiming the 200,000-row benchmark passed unless you ran it and recorded the result.
+Show indexes and the `npm run seed:scale` command. Mention that the actionable queue filters/paginates in PostgreSQL. Close by disclosing the prototype's known limits: demo identity header, no second approver, and no database-enforced audit immutability. Avoid claiming the 200,000-row benchmark passed unless you ran it and recorded the result.

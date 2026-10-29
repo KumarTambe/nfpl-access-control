@@ -1,73 +1,69 @@
-# NFPL Access Control Service — Design Note
+# NFPL Access Control Service Design Note
 
-## 1. Goal and assumptions
+## Purpose and model
 
-The service makes an explicit decision about a user, an action and a specific shipment (job). The business rule is not simply “is the user an admin?” A normal decision must account for the user's current status, assigned role, client, branch, direction, transport mode, workflow stage, and separation of duties.
+This backend service makes an explicit, server-side decision about a user, an action and a shipment job. A decision combines current user status, effective role assignments, client, branch, direction, mode, workflow stage and separation of duties. Permission assignments are additive: every non-empty scope field in one assignment must match the job, while separate assignments may grant different responsibilities. The normal workflow is Confirmed -> Prepared -> Checked -> Filed; Reopened returns work to preparation.
 
-Assumptions for this prototype:
+PostgreSQL stores users, status history, jobs, role definitions, role-action mappings, scoped assignments and audit events. The pure `canPerform` policy function returns an allow/deny result, a stable code and a plain-language reason. Routes use that same function before a mutation. A mutation locks the job, checks access again, updates the job and writes its audit event in one transaction. Unknown actions, missing data, inactive users, unmatched scope and invalid states are denied.
 
-- Permission assignments are additive. A permission row grants a role within the intersection of its non-empty scope dimensions; an empty dimension means “all” for that dimension.
-- `Confirmed → Prepared → Checked → Filed` is the normal workflow. Reopened jobs return to Maker preparation. Cancelled and Filed jobs require special handling to be reopened or, in the Filed case, cancelled.
-- A user marked `absent` cannot act or receive an actionable queue. The absence itself does not silently grant the absent user's powers to someone else; a qualified substitute receives a temporary, reasoned grant with an expiry.
-- Client users are read-only and may only access their own client. The automated parser is a service identity, not an employee.
-- Unknown actions, inactive users, missing permissions, unmatched scopes and unsupported state transitions are denied by default.
+## Decisions for the 14 questions
 
-## 2. Model and enforcement
+### 1. Visibility versus action
 
-The database has separate tables for `users`, `user_status_history`, `clients`, `branches`, `jobs`, `role_definitions`, `role_action_permissions`, `permission_assignments` and `audit_logs`.
+`view_job` is a separate action. An internal user needs an effective in-scope view grant even if they can manage permissions. A visible job does not imply prepare, check or file access.
 
-A `permission_assignments` row combines a user, role, optional client/branch/direction/mode restrictions, an effective-from timestamp, an optional expiry, a revocation timestamp and a reason. Rows are revoked rather than deleted, so historical permissions remain inspectable. Each non-empty scope field must match the job. Multiple grants are allowed, so one employee can be Maker everywhere and Checker only for selected clients. `user_status_history` records an initial status and later changes with an effective timestamp, actor and reason; the current `users.status` and history row are updated in the same transaction.
+### 2. Different responsibilities in different business areas
 
-Role definitions and role-to-action mappings live in PostgreSQL. An access administrator can create a custom role from an approved, existing action catalogue without a code deployment. Code still owns the workflow invariants (for example, a Checker can act only when a job is Prepared, and the preparer cannot check their own work). New *actions* or sensitive exception capabilities require code review; custom roles cannot gain permission-management or filed-job override actions.
+Use several scoped assignments rather than one global role. For example, Priya is Maker everywhere and Checker only for BluePeak; Rahul is Checker only for Aster Imports, Mumbai, IMPORT. Scope dimensions in one row are ANDed.
 
-The policy lives in one pure function, `canPerform(user, action, job, assignments, context, time)`. It returns `allowed`, a stable decision code and a human-readable explanation. HTTP routes call this policy; they do not trust the caller's claim that the action is allowed. Workflow actions require a matching view grant as well, so a custom role cannot mutate a job and then learn its details without visibility permission. Workflow changes lock the job row, re-check authorization immediately before updating, and save the state change and audit entry in one database transaction.
+### 3. A Maker who is also qualified to Check
 
-## 3. Decisions for the 14 assessment questions
+The job records `prepared_by_user_id`. `check_job` is denied when that ID equals the actor, even if the actor has an otherwise valid Checker assignment. A different in-scope Checker is required.
 
-### 1. Visibility vs action
-Visibility is itself an explicit `view_job` action. Internal users can see a job only if an effective scoped role grants `view_job`. Client users are limited to their client and read-only access. The global access administrator manages permissions but does not automatically see or alter every shipment. A user may be able to view a job but not prepare, check or file it.
+### 4. The responsible person is absent
 
-### 2. Different roles for different parts of the business
-Use multiple scoped assignments, not a single global role field. Priya has a Maker assignment with all scope dimensions blank and a separate Checker assignment restricted to BluePeak Retail. Rahul has Checker for Aster Imports at Mumbai, direction IMPORT, any mode. The dimensions in a single row are combined with AND; separate rows are independent grants.
+An absent user cannot act and receives an empty actionable queue. A supervisor can give an already-qualified substitute the smallest needed scoped grant with an expiry and a reason; this is auditable and does not copy all of the absent person's access.
 
-### 3. Maker is also qualified to Check
-The system records `prepared_by_user_id` and refuses `check_job` when it matches the acting user ID, regardless of whether the person also has a Checker grant. Qualification does not override separation of duties. Another scoped Checker must check the work.
+### 5. Responsibilities change mid-process
 
-### 4. Responsible person is absent
-An absent user is denied actions and removed from the actionable queue. A supervisor chooses an already qualified substitute and grants the smallest required scope with an expiry and reason. This is auditable and avoids copying all of the absent employee's powers. The sample includes an absent Checker and a temporary Checker grant that expires seven days after seeding.
+Assignments have effective-from, expiry and revocation times, and every decision reads the current database state. A revocation affects the next check. Retained assignment rows and `user_status_history` support later investigation.
 
-### 5. Responsibilities change while a job is in progress
-Permission assignments carry `effective_from`, `expires_at` and `revoked_at`; each request reads current database permissions rather than relying on an application cache. A grant change applies to the next authorization check. Being halfway through a job does not preserve a revoked permission. Existing assignments remain in history so an investigation can evaluate which grants were effective at a chosen time.
+### 6. Cancel or reopen a Filed job
 
-### 6. Cancel a Filed job or reopen a closed job
-Routine cancellation is limited to scoped operational roles and only before filing. A filed job can be cancelled only through `workflow_admin`; reopening a Filed or Cancelled job also uses `workflow_admin`. Both actions require a meaningful reason and produce an audit event with before/after state, actor, time and request ID. Access administration and workflow overrides are separated. This MVP does not implement a second approver; a production deployment should add dual approval for high-impact reopening.
+Routine cancellation is only for pre-filed work. Filed cancellation and reopening a Filed or Cancelled job require the separate `workflow_admin` role, an in-scope view grant, and a meaningful reason. The change and audit event are one transaction. This prototype has no second approver.
 
-### 7. Client employee follows shipments
-A client employee is a `client` user with a `client_viewer` grant scoped to their client. The service denies jobs for other clients and does not expose mutation actions to the client user. The API still requires verified authentication in a production system.
+### 7. A client employee follows shipments
 
-### 8. Admin fixes a stuck job; admin self-escalation
-There are separate roles for `access_admin` and `workflow_admin`. An access administrator manages permission grants but has no implicit shipment-write bypass. A workflow administrator may use high-risk exception actions with a reason and audit event. Administrators cannot create, revoke or broaden their own grants; a second administrator must do it. Custom roles cannot assign `manage_permissions`, `cancel_filed_job` or `reopen_filed_job`.
+A `client` user receives only `client_viewer`, scoped to their own client. The policy enforces that client boundary and read-only access; other client jobs and workflow actions are denied.
+
+### 8. An admin fixes a stuck job without self-escalation
+
+`access_admin` manages roles and assignments but has no automatic shipment access. `workflow_admin` handles defined exceptions. Administrators cannot create, revoke or broaden their own grant; custom roles cannot receive permission administration or filed-job override actions.
 
 ### 9. Overnight automated parser
-The parser is a dedicated `service` identity with a scoped `parser` role. It can create an initial Confirmed job only inside its grant scope, or update a narrow metadata whitelist (`externalReference`, `description`, `etaDate`) on non-filed, non-cancelled jobs. It cannot change workflow stage, who prepared/checked/filed, or alter a finalized job. Parser operations are audited like human mutations.
 
-### 10. “Why can she do this and he can’t?”
-`GET /authorization/check` evaluates a selected user/action/job and returns `allowed`, a stable reason code and a plain-English explanation. A global access administrator can inspect another user's decision; other users can inspect their own. The API uses the same policy used to authorize changes, not a separate explanation-only ruleset. If the caller cannot view a job, a real inaccessible job and a missing job both return the same minimal 404 response; this prevents that response distinction from disclosing existence, but does not claim to remove timing side channels.
+The parser is a `service` identity with a scoped Parser role. It can create a Confirmed job within scope and update only `externalReference`, `description` and `etaDate` on non-finalized jobs. It cannot change workflow or actor fields; parser operations are audited.
 
-### 11. “Who could have changed this job on the 3rd?”
-Job history stores actor, action, timestamp, before/after snapshots, reason and request ID. Permission grants are retained with effective and revocation times. The investigation endpoint reconstructs the job snapshot at the requested time from later audit events, evaluates each assignment at that timestamp, and looks up the user's recorded status at that timestamp. This answers who was eligible under the stored policy; the job history answers who actually changed it. A missing status record fails closed rather than inventing a past status. The unique `(user_id, effective_at)` rule prevents ambiguous records at the same instant.
+### 10. Why one person can act and another cannot
 
-### 12. Introduce a new kind of role while engineering is busy
-An access administrator can call `POST /roles` with a new role name, description, user type and a list of approved actions. Role definitions and action mappings are stored in PostgreSQL, so adding a new combination of existing low-risk actions requires no code deployment. Scope is then granted with `POST /permissions`. High-risk actions and permission administration are deliberately excluded from custom roles; changing the action catalogue or the workflow invariants remains an engineering-controlled change.
+`GET /authorization/check` returns `allowed`, a stable decision code and an explanation from the same policy used for enforcement. The user can inspect their own decision; a global access administrator can inspect another user's decision. Inaccessible and missing jobs receive the same minimal 404 response.
 
-### 13. “Jobs waiting for me” count matches what the person can actually do
-The queue query uses the current permission assignments, role-action map, scope fields, user status, matching view permission and relevant workflow stage. It excludes a Checker from jobs they prepared themselves. It returns the total actionable count separately from the current page. Filtering, counting and pagination happen in PostgreSQL rather than loading 200,000 jobs into Node. Indexes support stage/scope lookup, user-role lookup and recent audit retrieval. Permission mappings are queried live rather than cached so changes take effect promptly.
+### 11. Who could have changed a job at a past time
 
-### 14. What if the system is unsure?
-Fail closed. Missing user/job, no matching effective assignment, unknown action, invalid role scope, expired/revoked grant, inactive user, self-check conflict or invalid stage results in denial with a reason code. Database failures prevent the state change; workflow mutation and audit write share a transaction so one cannot commit without the other.
+History shows who actually changed it. The investigation endpoint reconstructs the job snapshot, applies assignments effective at the requested time, and uses the recorded status effective then. Missing historical status denies eligibility rather than guessing.
 
-## 4. Alternatives and trade-offs
+### 12. Add a role while engineering is busy
 
-Node.js is chosen because it matches the developer's JavaScript experience and supports asynchronous request/database I/O. Express supplies straightforward routing and middleware without requiring a more opinionated framework. PostgreSQL models relational entities and supports foreign keys, transactions and indexes. The `pg` library keeps SQL explicit and parameterized. Other reasonable stacks include Python/FastAPI or Java/Spring Boot and MySQL/MongoDB; the choice is about fit and implementation cost, not claiming those alternatives are invalid.
+An access administrator may create a role from approved existing actions and then grant it with scope. Role/action mappings are data-driven. The action catalogue, workflow rules, permission management and high-risk exceptions remain code-controlled.
 
-This prototype optimizes for explainability and assessment scope rather than a full enterprise identity system. It does not include a frontend, SSO, dual-approval workflow, database-enforced audit immutability or a formal load benchmark. The demo actor header exists only to make sample actions reproducible. Production must use a verified identity provider and should add dual approval, security-event monitoring, retention policy, migration tooling, database protections for audit records, and repeatable load testing.
+### 13. Jobs waiting for me
+
+PostgreSQL filters the queue by current status, effective grants, scope, view access, workflow stage and maker/checker separation; it counts all matches and paginates the returned page. It does not load the whole queue into Node.
+
+### 14. The system is unsure
+
+It fails closed. Missing user/job, unknown action, expired or revoked grant, invalid scope, inactive status, self-check and invalid workflow state deny access. A database failure rolls back the workflow update and its audit event.
+
+## Trade-offs and limits
+
+Node.js, Express, PostgreSQL and `pg` keep the implementation small, explicit and explainable. The service is backend-only; no frontend is required for the demonstrated API. `x-demo-user-id` is a reproducible demo switch, not authentication and must be replaced by verified SSO/session/JWT identity in production. Audit rows are not protected from a privileged direct database writer. Production should add real authentication, audit immutability controls, dual approval for high-impact exceptions, monitoring, retention and repeatable load testing. The recorded 500-user/200,000-job check is a local observation, not a capacity guarantee.
